@@ -45,8 +45,8 @@ class ObjectTracker(Node):
         twist = Twist()
 
         # Control parameters (adjustable)
-        angular_speed = 0.5
-        center_threshold = 50  # Pixels tolerance for being "centered"
+        angular_speed = 0.35
+        center_threshold = 70  # Pixels tolerance for being "centered"
 
         # Calculate the center of the frame
         center_x = frame_width // 2
