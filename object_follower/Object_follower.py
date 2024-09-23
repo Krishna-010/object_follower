@@ -45,7 +45,6 @@ class ObjectTracker(Node):
         twist = Twist()
 
         # Control parameters (adjustable)
-        linear_speed = 0.2
         angular_speed = 0.5
         center_threshold = 50  # Pixels tolerance for being "centered"
 
@@ -55,12 +54,13 @@ class ObjectTracker(Node):
         # Object is to the right, rotate right
         elif centroid_x > frame_width // 2 + center_threshold:
             twist.angular.z = -angular_speed
-        # Object is centered, move forward
+        # Object is centered, no movement
         else:
-            twist.linear.x = linear_speed
+            twist.angular.z = 0.0
 
         # Publish movement command
         self.publisher_cmd_vel.publish(twist)
+
 
     def timer_callback(self):
         # Capture frame-by-frame
