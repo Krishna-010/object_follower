@@ -2,74 +2,63 @@ import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import CompressedImage
 from rclpy.qos import QoSProfile, QoSDurabilityPolicy, QoSReliabilityPolicy, QoSHistoryPolicy
-
-import sys
-
-import numpy as np
 import cv2
 from cv_bridge import CvBridge
 
 class MinimalVideoSubscriber(Node):
 
-	def __init__(self):		
-		# Creates the node.
-		super().__init__('minimal_video_subscriber')
+    def __init__(self):
+        super().__init__('minimal_video_subscriber')
 
-		# Set Parameters
-		self.declare_parameter('show_image_bool', True)
-		self.declare_parameter('window_name', "Raw Image")
+        # Set Parameters
+        self.declare_parameter('show_image_bool', True)
+        self.declare_parameter('window_name', "Raw Image")
 
-		#Determine Window Showing Based on Input
-		self._display_image = bool(self.get_parameter('show_image_bool').value)
+        self._display_image = bool(self.get_parameter('show_image_bool').value)
+        self._titleOriginal = self.get_parameter('window_name').value
 
-		# Declare some variables
-		self._titleOriginal = self.get_parameter('window_name').value # Image Window Title	
-		if(self._display_image):
-		# Set Up Image Viewing
-			cv2.namedWindow(self._titleOriginal, cv2.WINDOW_AUTOSIZE ) # Viewing Window
-			cv2.moveWindow(self._titleOriginal, 50, 50) # Viewing Window Original Location
-	
-		#Set up QoS Profiles for passing images over WiFi
-		image_qos_profile = QoSProfile(depth=5)
-		image_qos_profile.history = QoSHistoryPolicy.KEEP_LAST
-		image_qos_profile.durability = QoSDurabilityPolicy.VOLATILE 
-		image_qos_profile.reliability = QoSReliabilityPolicy.BEST_EFFORT 
+        if self._display_image:
+            cv2.namedWindow(self._titleOriginal, cv2.WINDOW_AUTOSIZE)
+            cv2.moveWindow(self._titleOriginal, 50, 50)
 
-		#Declare that the minimal_video_subscriber node is subcribing to the /camera/image/compressed topic.
-		self._video_subscriber = self.create_subscription(
-				CompressedImage,
-				'/camera/image/compressed',
-				self._image_callback,
-				image_qos_profile)
-		self._video_subscriber # Prevents unused variable warning.
+        image_qos_profile = QoSProfile(depth=5)
+        image_qos_profile.history = QoSHistoryPolicy.KEEP_LAST
+        image_qos_profile.durability = QoSDurabilityPolicy.VOLATILE
+        image_qos_profile.reliability = QoSReliabilityPolicy.BEST_EFFORT
 
-	def _image_callback(self, CompressedImage):	
-		# The "CompressedImage" is transformed to a color image in BGR space and is store in "_imgBGR"
-		self._imgBGR = CvBridge().compressed_imgmsg_to_cv2(CompressedImage, "bgr8")
-		if(self._display_image):
-			# Display the image in a window
-			self.show_image(self._imgBGR)
-				
+        self._video_subscriber = self.create_subscription(
+            CompressedImage,
+            '/camera/image/compressed',
+            self._image_callback,
+            image_qos_profile)
+        self._video_subscriber
 
-	def get_image(self):
-		return self._imgBGR
+    def _image_callback(self, compressed_image):
+        self.get_logger().info("Received image")  # Debug log
+        try:
+            self._imgBGR = CvBridge().compressed_imgmsg_to_cv2(compressed_image, "bgr8")
+            if self._display_image:
+                self.show_image(self._imgBGR)
+        except Exception as e:
+            self.get_logger().error(f'Error processing image: {e}')
 
-	def show_image(self, img):
-		cv2.imshow(self._titleOriginal, img)
-		# Cause a slight delay so image is displayed
-		self._user_input=cv2.waitKey(50) #Use OpenCV keystroke grabber for delay.
-
+    def show_image(self, img):
+        cv2.imshow(self._titleOriginal, img)
+        cv2.waitKey(1)
 
 def main():
-	rclpy.init() #init routine needed for ROS2.
-	video_subscriber = MinimalVideoSubscriber() #Create class object to be used.
-	
-	rclpy.spin(video_subscriber) # Trigger callback processing.		
+    rclpy.init()
+    video_subscriber = MinimalVideoSubscriber()
 
-	#Clean up and shutdown.
-	video_subscriber.destroy_node()  
-	rclpy.shutdown()
-
+    try:
+        rclpy.spin(video_subscriber)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        if video_subscriber._display_image:
+            cv2.destroyAllWindows()
+        video_subscriber.destroy_node()
+        rclpy.shutdown()
 
 if __name__ == '__main__':
-	main()
+    main()
