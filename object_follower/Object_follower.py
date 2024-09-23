@@ -46,18 +46,19 @@ class ObjectTracker(Node):
 
         # Control parameters (adjustable)
         angular_speed = 0.5
-        center_threshold = 35  # Pixels tolerance for being "centered"
+        center_threshold = 50  # Pixels tolerance for being "centered"
 
-        # Object is to the left, rotate left
-        if centroid_x < frame_width // 2 - center_threshold:
-            twist.angular.z = angular_speed
-        # Object is to the right, rotate right
-        elif centroid_x > frame_width // 2 + center_threshold:
-            twist.angular.z = -angular_speed
-        # Object is centered, no movement
+        # Calculate the center of the frame
+        center_x = frame_width // 2
+
+        # Check if the centroid is outside the deadband
+        if centroid_x < center_x - center_threshold:
+            twist.angular.z = angular_speed  # Rotate left
+        elif centroid_x > center_x + center_threshold:
+            twist.angular.z = -angular_speed  # Rotate right
         else:
-            twist.angular.z = 0.0
-
+            twist.angular.z = 0.0  # Stop rotating if centered
+    
         # Publish movement command
         self.publisher_cmd_vel.publish(twist)
 
