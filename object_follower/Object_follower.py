@@ -46,7 +46,7 @@ class ObjectTracker(Node):
 
         # Control parameters (adjustable)
         angular_speed = 0.5
-        center_threshold = 50  # Pixels tolerance for being "centered"
+        center_threshold = 70  # Pixels tolerance for being "centered"
 
         # Object is to the left, rotate left
         if centroid_x < frame_width // 2 - center_threshold:
