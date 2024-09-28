@@ -1,83 +1,113 @@
 import rclpy
 from rclpy.node import Node
-from geometry_msgs.msg import Twist, Point
+from geometry_msgs.msg import Twist
+from std_msgs.msg import Float32
 import time
 
-class ObjectChaser(Node):
+class ChaseObject(Node):
     def __init__(self):
-        super().__init__('object_chaser')
+        super().__init__('chase_object')
 
+        # Publisher for velocity commands
         self.cmd_vel_publisher = self.create_publisher(Twist, '/cmd_vel', 10)
-        self.centroid_subscription = self.create_subscription(
-            Point, '/object_centroid', self.centroid_callback, 10)
-        self.distance_subscription = self.create_subscription(
-            Point, '/object_distance', self.distance_callback, 10)
 
-        self.object_centroid = None
-        self.object_distance = float('inf')
-        self.target_distance = 0.2  # 20 cm
-        self.start_time = time.time()
-        self.time_limit = 5  # 5 second time limit
+        # Subscriber for object detection information (centroid)
+        self.centroid_subscriber = self.create_subscription(
+            Float32,
+            '/object_centroid',
+            self.centroid_callback,
+            10
+        )
 
-    def centroid_callback(self, centroid):
-        self.object_centroid = (centroid.x, centroid.y)
-        self.get_logger().info(f'Object centroid received: {self.object_centroid}')
+        # PID control parameters
+        self.kp_angular = 0.002   # Proportional gain
+        self.ki_angular = 0.0001  # Integral gain
+        self.kd_angular = 0.001   # Derivative gain
 
-    def distance_callback(self, distance):
-        self.object_distance = distance.x  # We are using the x field to represent distance
-        self.get_logger().info(f'Object distance received: {self.object_distance:.2f} meters')
+        self.prev_error_x = 0.0   # Previous error
+        self.integral_x = 0.0     # Integral of error
+        self.prev_time = time.time()
 
-        if self.object_centroid and self.object_distance:
-            self.move_towards_object()
+        self.target_distance = 0.2  # Target stopping distance (in meters)
 
-        if time.time() - self.start_time > self.time_limit:
-            self.get_logger().info("Time limit reached, stopping.")
-            self.stop_robot()
+        # Subscriber for distance to object
+        self.distance_subscriber = self.create_subscription(
+            Float32,
+            '/object_distance',
+            self.distance_callback,
+            10
+        )
 
-        if self.object_distance <= self.target_distance:
-            self.get_logger().info("Reached target distance, stopping.")
-            self.stop_robot()
+        self.current_distance = None
+        self.stop_flag = False
 
-    def move_towards_object(self):
+    def centroid_callback(self, msg):
+        if self.stop_flag:
+            return
+
+        centroid_x = msg.data  # The X coordinate of the object centroid
+        frame_width = 640  # Assuming a frame width of 640 pixels
+
+        # PID control for angular velocity
+        error_x = centroid_x - frame_width // 2  # The error in X-axis (object centering)
+        current_time = time.time()
+        dt = current_time - self.prev_time
+
+        # Proportional term
+        p_term = self.kp_angular * error_x
+
+        # Integral term
+        self.integral_x += error_x * dt
+        i_term = self.ki_angular * self.integral_x
+
+        # Derivative term
+        derivative_x = (error_x - self.prev_error_x) / dt
+        d_term = self.kd_angular * derivative_x
+
+        # Total angular velocity (PID output)
+        angular_z = -(p_term + i_term + d_term)
+
+        # Update previous error and time
+        self.prev_error_x = error_x
+        self.prev_time = current_time
+
+        # Create the Twist message to control the robot
         twist = Twist()
 
-        frame_width = 640  # Assume a fixed frame width
-        center_threshold = 50  # Pixel threshold for centering
+        # Apply only angular velocity (for rotation)
+        twist.angular.z = angular_z
 
-        # Rotate to center on the object
-        if self.object_centroid[0] < frame_width // 2 - center_threshold:
-            twist.angular.z = 0.5
-        elif self.object_centroid[0] > frame_width // 2 + center_threshold:
-            twist.angular.z = -0.5
-        else:
-            twist.angular.z = 0  # Stop rotating when centered
-
-        # Move forward if the object is far
-        if self.object_distance > self.target_distance:
-            twist.linear.x = 0.2
-        else:
-            twist.linear.x = 0
-
-        # Publish the movement command
+        # Publish the velocity command
         self.cmd_vel_publisher.publish(twist)
+
+    def distance_callback(self, msg):
+        self.current_distance = msg.data
+
+        # Stop if the object is within the target distance
+        if self.current_distance <= self.target_distance:
+            self.stop_robot()
 
     def stop_robot(self):
+        self.stop_flag = True
+
+        # Publish zero velocities to stop the robot
         twist = Twist()
-        twist.linear.x = 0
-        twist.angular.z = 0
+        twist.linear.x = 0.0
+        twist.angular.z = 0.0
         self.cmd_vel_publisher.publish(twist)
-        self.get_logger().info('Emergency stop initiated: Robot stopped.')
+
+        self.get_logger().info('Robot stopped within target distance.')
 
 def main(args=None):
     rclpy.init(args=args)
-    node = ObjectChaser()
+    chase_object = ChaseObject()
 
     try:
-        rclpy.spin(node)
+        rclpy.spin(chase_object)
     except KeyboardInterrupt:
-        node.stop_robot()
+        pass
     finally:
-        node.destroy_node()
+        chase_object.destroy_node()
         rclpy.shutdown()
 
 if __name__ == '__main__':
