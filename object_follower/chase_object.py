@@ -31,7 +31,7 @@ class ChaseObject(Node):
         self.integral = 0.0
 
         # Target distance from the object (in meters)
-        self.target_distance = 0.35  # 35 cm
+        self.target_distance = 0.5  # 35 cm
         self.max_speed = 0.5  # Maximum linear speed
 
     def laser_callback(self, msg):
