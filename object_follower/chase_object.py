@@ -2,7 +2,7 @@ import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import Twist
 from sensor_msgs.msg import LaserScan
-from rclpy.qos import QoSProfile, QoSReliabilityPolicy
+import numpy as np
 import logging
 
 class ChaseObject(Node):
@@ -10,71 +10,65 @@ class ChaseObject(Node):
         super().__init__('chase_object')
         self.get_logger().info('Chase node initialized')
 
-        # Setup QoS for LaserScan subscriber
-        qos_profile = QoSProfile(depth=10)
-        qos_profile.reliability = QoSReliabilityPolicy.BEST_EFFORT  # Change to BEST_EFFORT to match typical LIDAR publishers
+        # Initialize the publisher to cmd_vel
+        self.cmd_vel_publisher = self.create_publisher(Twist, '/cmd_vel', 10)
+        self.get_logger().info('Initialized cmd_vel publisher')
 
-        # Set up subscriber and publisher
-        self.laser_subscription = self.create_subscription(
+        # Initialize the subscriber to LaserScan
+        self.laser_subscriber = self.create_subscription(
             LaserScan,
             '/scan',
             self.laser_callback,
-            qos_profile)
+            10
+        )
+        self.get_logger().info('Initialized laser subscriber')
 
-        self.cmd_publisher = self.create_publisher(Twist, '/cmd_vel', 10)
+        # PID parameters
+        self.kp = 0.5  # Proportional gain
+        self.ki = 0.1  # Integral gain
+        self.kd = 0.05  # Derivative gain
+        self.prev_error = 0.0
+        self.integral = 0.0
 
-        # Control parameters
-        self.linear_speed = 0.2
-        self.angular_speed = 0.5
-        self.stop_distance = 0.35  # Stop when within 35 cm of object
-
-        self.get_logger().info('Initialized laser subscriber and cmd_vel publisher')
+        # Target distance from the object (in meters)
+        self.target_distance = 0.35  # 35 cm
+        self.max_speed = 0.5  # Maximum linear speed
 
     def laser_callback(self, msg):
-        try:
-            self.get_logger().debug("Laser callback triggered")
-            # Extract the distance data from the LIDAR message
-            ranges = msg.ranges
-            if len(ranges) == 0:
-                self.get_logger().warn("LIDAR data is empty!")
-                return
+        # Get the distance to the object
+        distances = np.array(msg.ranges)
+        min_distance = np.min(distances)  # Minimum distance detected
 
-            # Find the distance directly in front of the robot
-            front_distance = ranges[len(ranges) // 2]
+        # Calculate PID control variables
+        error = self.target_distance - min_distance  # Calculate error
+        self.integral += error  # Update integral
+        derivative = error - self.prev_error  # Calculate derivative
+        self.prev_error = error  # Update previous error
 
-            # Log the detected distance for debugging
-            self.get_logger().debug(f"Front distance: {front_distance}")
+        # Calculate control output
+        linear_speed = self.kp * error + self.ki * self.integral + self.kd * derivative
 
-            # Define Twist message to move the robot
-            twist = Twist()
+        # Ensure linear speed does not exceed max speed
+        linear_speed = max(min(linear_speed, self.max_speed), 0.0)
 
-            # If the object is further than the stop distance, move forward
-            if front_distance > self.stop_distance:
-                twist.linear.x = self.linear_speed
-                self.get_logger().info(f"Moving forward, distance: {front_distance}")
-            else:
-                # Stop the robot
-                twist.linear.x = 0.0
-                twist.angular.z = 0.0
-                self.get_logger().info(f"Stopping as object is within {self.stop_distance}m")
+        # Create and publish the Twist message
+        twist = Twist()
+        twist.linear.x = linear_speed
+        twist.angular.z = 0.0  # No rotation for this example
 
-            # Publish the Twist command to control the robot
-            self.cmd_publisher.publish(twist)
-            self.get_logger().debug("Published Twist message")
-
-        except Exception as e:
-            self.get_logger().error(f"Error in laser callback: {e}")
+        self.cmd_vel_publisher.publish(twist)
+        self.get_logger().info(f'Publishing: Linear speed = {linear_speed}, Distance to object = {min_distance:.2f} m')
 
 def main(args=None):
     rclpy.init(args=args)
-    chase_node = ChaseObject()
+    chase_object = ChaseObject()
 
     try:
-        rclpy.spin(chase_node)
+        rclpy.spin(chase_object)
     except Exception as e:
-        chase_node.get_logger().error(f"Error while running node: {e}")
+        chase_object.get_logger().error(f'Error while running node: {e}')
     finally:
-        chase_node.destroy_node()
+        chase_object.destroy_node()
         rclpy.shutdown()
 
 if __name__ == '__main__':
