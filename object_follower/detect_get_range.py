@@ -1,6 +1,7 @@
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import CompressedImage, LaserScan
+from rclpy.qos import QoSProfile, QoSReliabilityPolicy
 from geometry_msgs.msg import Twist
 import numpy as np
 import cv2
@@ -23,6 +24,7 @@ class DetectObjectAndGetRange(Node):
         # Publishers and subscribers
         self.pub_cmd = self.create_publisher(Twist, '/cmd_vel', 10)
 
+        # Image subscriber
         self.sub_img = self.create_subscription(
             CompressedImage,
             '/camera/image/compressed',
@@ -30,11 +32,16 @@ class DetectObjectAndGetRange(Node):
             10
         )
 
+        # Adjust the QoS settings for the LaserScan subscriber
+        qos_profile = QoSProfile(depth=10)
+        qos_profile.reliability = QoSReliabilityPolicy.BEST_EFFORT  # Ensure reliable communication
+
+        # LaserScan subscriber with updated QoS
         self.sub_scan = self.create_subscription(
             LaserScan,
             '/scan',
             self.scan_callback,
-            10
+            qos_profile
         )
 
         self.latest_scan = None
