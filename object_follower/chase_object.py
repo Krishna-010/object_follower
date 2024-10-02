@@ -14,12 +14,16 @@ class ChaseObject(Node):
         self.cmd_vel_publisher = self.create_publisher(Twist, '/cmd_vel', 10)
         self.get_logger().info('Initialized cmd_vel publisher')
 
+        # Adjust the QoS settings for the LaserScan subscriber
+        qos_profile = QoSProfile(depth=10)
+        qos_profile.reliability = QoSReliabilityPolicy.BEST_EFFORT  # Ensure reliable communication
+
         # Initialize the subscriber to LaserScan
         self.laser_subscriber = self.create_subscription(
             LaserScan,
             '/scan',
             self.laser_callback,
-            10
+            qos_profile
         )
         self.get_logger().info('Initialized laser subscriber')
 
