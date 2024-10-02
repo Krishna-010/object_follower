@@ -1,114 +1,87 @@
 import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import Twist
-from std_msgs.msg import Float32
-import time
+from time import time
 
 class ChaseObject(Node):
     def __init__(self):
         super().__init__('chase_object')
 
-        # Publisher for velocity commands
-        self.cmd_vel_publisher = self.create_publisher(Twist, '/cmd_vel', 10)
+        # Create publisher for /cmd_vel topic
+        self.publisher_cmd_vel = self.create_publisher(Twist, '/cmd_vel', 10)
 
-        # Subscriber for object detection information (centroid)
-        self.centroid_subscriber = self.create_subscription(
-            Float32,
-            '/object_centroid',
-            self.centroid_callback,
-            10
-        )
+        # Initialize PID variables for angular velocity (rotation)
+        self.prev_error_angular = 0.0
+        self.integral_angular = 0.0
+        self.prev_time = time()
 
-        # PID control parameters
-        self.kp_angular = 0.002   # Proportional gain
-        self.ki_angular = 0.0001  # Integral gain
-        self.kd_angular = 0.001   # Derivative gain
+        # PID gains (these values will need to be tuned)
+        self.Kp_angular = 0.4
+        self.Ki_angular = 0.01
+        self.Kd_angular = 0.2
 
-        self.prev_error_x = 0.0   # Previous error
-        self.integral_x = 0.0     # Integral of error
-        self.prev_time = time.time()
+        # PID variables for linear velocity (moving forward)
+        self.prev_error_linear = 0.0
+        self.integral_linear = 0.0
 
-        self.target_distance = 0.2  # Target stopping distance (in meters)
+        self.Kp_linear = 0.5
+        self.Ki_linear = 0.01
+        self.Kd_linear = 0.2
 
-        # Subscriber for distance to object
-        self.distance_subscriber = self.create_subscription(
-            Float32,
-            '/object_distance',
-            self.distance_callback,
-            10
-        )
+        # Desired stopping distance
+        self.desired_distance = 0.35  # 35cm
 
-        self.current_distance = None
-        self.stop_flag = False
+    def move_robot(self, centroid_x, frame_width, object_distance):
+        twist = Twist()
 
-    def centroid_callback(self, msg):
-        if self.stop_flag:
-            return
-
-        centroid_x = msg.data  # The X coordinate of the object centroid
-        frame_width = 640  # Assuming a frame width of 640 pixels
-
-        # PID control for angular velocity
-        error_x = centroid_x - frame_width // 2  # The error in X-axis (object centering)
-        current_time = time.time()
+        # Calculate error (object's x position relative to the center of the frame)
+        error_angular = (frame_width // 2) - centroid_x
+        current_time = time()
         dt = current_time - self.prev_time
 
-        # Proportional term
-        p_term = self.kp_angular * error_x
+        # Calculate proportional term
+        p_term_angular = self.Kp_angular * error_angular
 
-        # Integral term
-        self.integral_x += error_x * dt
-        i_term = self.ki_angular * self.integral_x
+        # Calculate integral term
+        self.integral_angular += error_angular * dt
+        i_term_angular = self.Ki_angular * self.integral_angular
 
-        # Derivative term
-        derivative_x = (error_x - self.prev_error_x) / dt
-        d_term = self.kd_angular * derivative_x
+        # Calculate derivative term
+        derivative_angular = (error_angular - self.prev_error_angular) / dt if dt > 0 else 0.0
+        d_term_angular = self.Kd_angular * derivative_angular
 
-        # Total angular velocity (PID output)
-        angular_z = -(p_term + i_term + d_term)
+        # Calculate total angular control output (rotation)
+        angular_z = p_term_angular + i_term_angular + d_term_angular
 
         # Update previous error and time
-        self.prev_error_x = error_x
+        self.prev_error_angular = error_angular
         self.prev_time = current_time
 
-        # Create the Twist message to control the robot
-        twist = Twist()
-
-        # Apply only angular velocity (for rotation)
+        # Apply angular velocity (rotate the robot to center the object)
         twist.angular.z = angular_z
 
-        # Publish the velocity command
-        self.cmd_vel_publisher.publish(twist)
+        # PID control for linear velocity (moving towards the object)
+        error_linear = object_distance - self.desired_distance
 
-    def distance_callback(self, msg):
-        self.current_distance = msg.data
+        # Calculate proportional, integral, and derivative terms for linear movement
+        p_term_linear = self.Kp_linear * error_linear
+        self.integral_linear += error_linear * dt
+        i_term_linear = self.Ki_linear * self.integral_linear
+        derivative_linear = (error_linear - self.prev_error_linear) / dt if dt > 0 else 0.0
+        d_term_linear = self.Kd_linear * derivative_linear
 
-        # Stop if the object is within the target distance
-        if self.current_distance <= self.target_distance:
-            self.stop_robot()
+        # Calculate total linear control output
+        linear_x = p_term_linear + i_term_linear + d_term_linear
 
-    def stop_robot(self):
-        self.stop_flag = True
+        # Update previous error for linear velocity
+        self.prev_error_linear = error_linear
 
-        # Publish zero velocities to stop the robot
-        twist = Twist()
-        twist.linear.x = 0.0
-        twist.angular.z = 0.0
-        self.cmd_vel_publisher.publish(twist)
+        # If the object is within the desired distance, stop linear movement
+        if object_distance <= self.desired_distance:
+            linear_x = 0.0
 
-        self.get_logger().info('Robot stopped within target distance.')
+        # Apply linear velocity
+        twist.linear.x = linear_x
 
-def main(args=None):
-    rclpy.init(args=args)
-    chase_object = ChaseObject()
-
-    try:
-        rclpy.spin(chase_object)
-    except KeyboardInterrupt:
-        pass
-    finally:
-        chase_object.destroy_node()
-        rclpy.shutdown()
-
-if __name__ == '__main__':
-    main()
+        # Publish the Twist message to move the robot
+        self.publisher_cmd_vel.publish(twist)
