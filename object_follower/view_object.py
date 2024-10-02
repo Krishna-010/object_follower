@@ -1,60 +1,54 @@
 import rclpy
 from rclpy.node import Node
-from sensor_msgs.msg import Image
-from geometry_msgs.msg import Point
+from sensor_msgs.msg import CompressedImage
 from cv_bridge import CvBridge
 import cv2
+import logging
 
-class ObjectViewer(Node):
+class CameraViewer(Node):
     def __init__(self):
-        super().__init__('object_viewer')
+        super().__init__('camera_viewer')
+        self.get_logger().info('Camera Viewer node initialized')
 
-        # Create subscribers for camera feed and object centroid with appropriate QoS settings
-        qos_profile = rclpy.qos.QoSProfile(depth=10)
-        qos_profile.reliability = rclpy.qos.QoSReliabilityPolicy.BEST_EFFORT
-
-        self.subscription_image = self.create_subscription(
-            Image, '/camera/image_raw', self.camera_callback, qos_profile)
-        self.subscription_centroid = self.create_subscription(
-            Point, '/object_centroid', self.centroid_callback, qos_profile)
-
+        # Initialize the CvBridge
         self.bridge = CvBridge()
-        self.centroid = None  # To store the received centroid coordinates
 
-    def camera_callback(self, data):
-        # Convert the ROS Image message to an OpenCV image
-        frame = self.bridge.imgmsg_to_cv2(data, "bgr8")
+        # Set up subscriber for the compressed image
+        self.image_subscriber = self.create_subscription(
+            CompressedImage,
+            '/camera/image/compressed',
+            self.image_callback,
+            10
+        )
 
-        # If a centroid has been received, draw it on the frame
-        if self.centroid:
-            cx, cy = int(self.centroid.x), int(self.centroid.y)
-            cv2.circle(frame, (cx, cy), 10, (0, 255, 0), -1)  # Draw a green circle at the centroid
-            cv2.putText(frame, 'Object', (cx - 20, cy - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+        self.get_logger().info('Subscribed to camera topic')
 
-        # Display the frame with a smaller delay (1 ms)
-        cv2.imshow('Object Viewer', frame)
-        cv2.waitKey(1)  # Minimal delay to ensure frame updates
+    def image_callback(self, msg):
+        try:
+            # Convert the compressed image to a cv2 format
+            cv_image = self.bridge.compressed_imgmsg_to_cv2(msg, "bgr8")
 
-    def centroid_callback(self, data):
-        # Receive the centroid coordinates from the detect_object node
-        self.centroid = data
+            # Display the image
+            cv2.imshow("Camera Feed", cv_image)
+            cv2.waitKey(1)  # Update the display window
 
-    def stop_viewing(self):
-        # Properly close all OpenCV windows when stopping
-        cv2.destroyAllWindows()
-        self.get_logger().info('Stopping Object Viewer.')
+            self.get_logger().debug('Image received and displayed')
+
+        except Exception as e:
+            self.get_logger().error(f"Error in image callback: {e}")
 
 def main(args=None):
     rclpy.init(args=args)
-    viewer = ObjectViewer()
+    camera_viewer = CameraViewer()
 
     try:
-        rclpy.spin(viewer)
-    except KeyboardInterrupt:
-        viewer.stop_viewing()
+        rclpy.spin(camera_viewer)
+    except Exception as e:
+        camera_viewer.get_logger().error(f"Error while running node: {e}")
     finally:
-        viewer.destroy_node()
+        camera_viewer.destroy_node()
         rclpy.shutdown()
+        cv2.destroyAllWindows()  # Close OpenCV windows
 
 if __name__ == '__main__':
     main()
