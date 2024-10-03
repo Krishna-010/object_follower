@@ -34,7 +34,7 @@ class ChaseObject(Node):
             self.get_logger().info(f"Object is {self.distance:.2f} meters in front of the robot")
 
             twist = Twist()
-            error = self.distance - 0.35  # Target distance is 35 cm
+            error = self.distance - 0.5  # Target distance is 50 cm
 
             # PID for linear velocity
             dt = 0.1  # time interval
