@@ -1,54 +1,30 @@
 import rclpy
 from rclpy.node import Node
-from sensor_msgs.msg import CompressedImage
-from cv_bridge import CvBridge
+from sensor_msgs.msg import Image
 import cv2
-import logging
+from cv_bridge import CvBridge
 
-class CameraViewer(Node):
+class ViewObject(Node):
     def __init__(self):
-        super().__init__('camera_viewer')
-        self.get_logger().info('Camera Viewer node initialized')
-
-        # Initialize the CvBridge
+        super().__init__('view_object')
+        self.subscription = self.create_subscription(Image, '/camera/image_raw', self.image_callback, 10)
         self.bridge = CvBridge()
+        self.get_logger().info("View Object Node Initialized")
+    
+    def image_callback(self, data):
+        frame = self.bridge.imgmsg_to_cv2(data, "bgr8")
 
-        # Set up subscriber for the compressed image
-        self.image_subscriber = self.create_subscription(
-            CompressedImage,
-            '/camera/image/compressed',
-            self.image_callback,
-            10
-        )
-
-        self.get_logger().info('Subscribed to camera topic')
-
-    def image_callback(self, msg):
-        try:
-            # Convert the compressed image to a cv2 format
-            cv_image = self.bridge.compressed_imgmsg_to_cv2(msg, "bgr8")
-
-            # Display the image
-            cv2.imshow("Camera Feed", cv_image)
-            cv2.waitKey(1)  # Update the display window
-
-            self.get_logger().debug('Image received and displayed')
-
-        except Exception as e:
-            self.get_logger().error(f"Error in image callback: {e}")
+        # You can add object detection here if needed
+        cv2.imshow("Robot Camera", frame)
+        cv2.waitKey(1)
 
 def main(args=None):
     rclpy.init(args=args)
-    camera_viewer = CameraViewer()
-
-    try:
-        rclpy.spin(camera_viewer)
-    except Exception as e:
-        camera_viewer.get_logger().error(f"Error while running node: {e}")
-    finally:
-        camera_viewer.destroy_node()
-        rclpy.shutdown()
-        cv2.destroyAllWindows()  # Close OpenCV windows
+    node = ViewObject()
+    rclpy.spin(node)
+    node.destroy_node()
+    cv2.destroyAllWindows()
+    rclpy.shutdown()
 
 if __name__ == '__main__':
     main()
