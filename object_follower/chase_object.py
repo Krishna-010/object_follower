@@ -1,80 +1,59 @@
 import rclpy
 from rclpy.node import Node
-from rclpy.qos import QoSProfile, QoSReliabilityPolicy
 from geometry_msgs.msg import Twist
 from sensor_msgs.msg import LaserScan
-import numpy as np
-import logging
+
+class PIDController:
+    def __init__(self, kp, ki, kd):
+        self.kp = kp
+        self.ki = ki
+        self.kd = kd
+        self.previous_error = 0
+        self.integral = 0
+
+    def calculate(self, error, dt):
+        self.integral += error * dt
+        derivative = (error - self.previous_error) / dt
+        self.previous_error = error
+        return self.kp * error + self.ki * self.integral + self.kd * derivative
 
 class ChaseObject(Node):
     def __init__(self):
         super().__init__('chase_object')
-        self.get_logger().info('Chase node initialized')
+        self.publisher_cmd_vel = self.create_publisher(Twist, '/cmd_vel', 10)
+        self.subscription = self.create_subscription(LaserScan, '/scan', self.laser_callback, 10)
+        self.distance = None
 
-        # Initialize the publisher to cmd_vel
-        self.cmd_vel_publisher = self.create_publisher(Twist, '/cmd_vel', 10)
-        self.get_logger().info('Initialized cmd_vel publisher')
-
-        # Adjust the QoS settings for the LaserScan subscriber
-        qos_profile = QoSProfile(depth=10)
-        qos_profile.reliability = QoSReliabilityPolicy.BEST_EFFORT  # Ensure reliable communication
-
-        # Initialize the subscriber to LaserScan
-        self.laser_subscriber = self.create_subscription(
-            LaserScan,
-            '/scan',
-            self.laser_callback,
-            qos_profile
-        )
-        self.get_logger().info('Initialized laser subscriber')
-
-        # PID parameters
-        self.kp = 0.5  # Proportional gain
-        self.ki = 0.1  # Integral gain
-        self.kd = 0.05  # Derivative gain
-        self.prev_error = 0.0
-        self.integral = 0.0
-
-        # Target distance from the object (in meters)
-        self.target_distance = 0.5  # 35 cm
-        self.max_speed = 0.5  # Maximum linear speed
+        self.linear_pid = PIDController(kp=1.0, ki=0.01, kd=0.1)
+        self.angular_pid = PIDController(kp=0.5, ki=0.01, kd=0.1)
+        self.get_logger().info("Chase node initialized with PID controllers")
 
     def laser_callback(self, msg):
-        # Get the distance to the object
-        distances = np.array(msg.ranges)
-        min_distance = np.min(distances)  # Minimum distance detected
+        if len(msg.ranges) > 0:
+            self.distance = min(msg.ranges)
+            self.get_logger().info(f"Object is {self.distance:.2f} meters in front of the robot")
 
-        # Calculate PID control variables
-        error = self.target_distance - min_distance  # Calculate error
-        self.integral += error  # Update integral
-        derivative = error - self.prev_error  # Calculate derivative
-        self.prev_error = error  # Update previous error
+            twist = Twist()
+            error = self.distance - 0.35  # Target distance is 35 cm
 
-        # Calculate control output
-        linear_speed = self.kp * error + self.ki * self.integral + self.kd * derivative
+            # PID for linear velocity
+            dt = 0.1  # time interval
+            twist.linear.x = self.linear_pid.calculate(error, dt)
+            if twist.linear.x > 0.5:
+                twist.linear.x = 0.5  # Limit maximum speed
 
-        # Ensure linear speed does not exceed max speed
-        linear_speed = max(min(linear_speed, self.max_speed), 0.0)
+            # Add logic for angular velocity here if necessary
+            twist.angular.z = 0.0
 
-        # Create and publish the Twist message
-        twist = Twist()
-        twist.linear.x = linear_speed
-        twist.angular.z = 0.0  # No rotation for this example
-
-        self.cmd_vel_publisher.publish(twist)
-        self.get_logger().info(f'Publishing: Linear speed = {linear_speed}, Distance to object = {min_distance:.2f} m')
+            self.publisher_cmd_vel.publish(twist)
+            self.get_logger().info(f"Linear Velocity: {twist.linear.x:.2f}, Angular Velocity: {twist.angular.z:.2f}")
 
 def main(args=None):
     rclpy.init(args=args)
-    chase_object = ChaseObject()
-
-    try:
-        rclpy.spin(chase_object)
-    except Exception as e:
-        chase_object.get_logger().error(f'Error while running node: {e}')
-    finally:
-        chase_object.destroy_node()
-        rclpy.shutdown()
+    node = ChaseObject()
+    rclpy.spin(node)
+    node.destroy_node()
+    rclpy.shutdown()
 
 if __name__ == '__main__':
     main()
