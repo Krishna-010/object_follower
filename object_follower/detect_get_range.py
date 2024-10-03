@@ -48,7 +48,7 @@ class DetectAndRange(Node):
             self.get_logger().info(f"LIDAR Distance: {self.lidar_distance:.2f} meters")
 
     def timer_callback(self):
-        if self.lidar_distance and self.lidar_distance <= 0.35:
+        if self.lidar_distance and self.lidar_distance <= 0.5:
             self.stop_robot()
 
     def stop_robot(self):
