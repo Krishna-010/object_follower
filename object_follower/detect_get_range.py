@@ -1,121 +1,69 @@
 import rclpy
 from rclpy.node import Node
-from sensor_msgs.msg import CompressedImage, LaserScan
-from rclpy.qos import QoSProfile, QoSReliabilityPolicy
+from sensor_msgs.msg import LaserScan
 from geometry_msgs.msg import Twist
-import numpy as np
 import cv2
+import numpy as np
 from cv_bridge import CvBridge
-import time
+from sensor_msgs.msg import Image
 
-class DetectObjectAndGetRange(Node):
+class DetectAndRange(Node):
     def __init__(self):
         super().__init__('detect_and_range')
-
-        self.get_logger().info("Node initialized: detect_and_range")
-
-        # Set parameters
-        self.declare_parameter('show_image_bool', True)
-        self.declare_parameter('window_name', "Raw Image")
-        self.target_distance = 0.35  # Desired distance (35 cm)
-
+        self.publisher_cmd_vel = self.create_publisher(Twist, '/cmd_vel', 10)
+        self.subscription_scan = self.create_subscription(LaserScan, '/scan', self.laser_callback, 10)
+        self.subscription_image = self.create_subscription(Image, '/camera/image_raw', self.image_callback, 10)
         self.bridge = CvBridge()
+        self.laser_data = None
+        self.timer = self.create_timer(0.1, self.timer_callback)
 
-        # Publishers and subscribers
-        self.pub_cmd = self.create_publisher(Twist, '/cmd_vel', 10)
-
-        # Image subscriber
-        self.sub_img = self.create_subscription(
-            CompressedImage,
-            '/camera/image/compressed',
-            self.image_callback,
-            10
-        )
-
-        # Adjust the QoS settings for the LaserScan subscriber
-        qos_profile = QoSProfile(depth=10)
-        qos_profile.reliability = QoSReliabilityPolicy.BEST_EFFORT  # Ensure reliable communication
-
-        # LaserScan subscriber with updated QoS
-        self.sub_scan = self.create_subscription(
-            LaserScan,
-            '/scan',
-            self.scan_callback,
-            qos_profile
-        )
-
-        self.latest_scan = None
-        self.get_logger().info("Waiting for scan data...")
+        # Object detection params
+        self.lower_red = np.array([0, 120, 70])
+        self.upper_red = np.array([10, 255, 255])
+        self.lidar_distance = None
+        self.get_logger().info("Detect and Range Node Initialized")
 
     def image_callback(self, data):
-        try:
-            self.get_logger().info("Image received")
-            np_arr = np.frombuffer(data.data, np.uint8)
-            image = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+        frame = self.bridge.imgmsg_to_cv2(data, "bgr8")
+        hsv_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        mask = cv2.inRange(hsv_frame, self.lower_red, self.upper_red)
 
-            # Object detection logic here (simplified for brevity)
-            detected_object = self.detect_object(image)
+        # Detect the object
+        contours, _ = cv2.findContours(mask, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+        if contours:
+            largest_contour = max(contours, key=cv2.contourArea)
+            if cv2.contourArea(largest_contour) > 500:
+                ((x, y), radius) = cv2.minEnclosingCircle(largest_contour)
+                if radius > 10:
+                    cx, cy = int(x), int(y)
+                    cv2.circle(frame, (cx, cy), int(radius), (0, 255, 0), 2)
+                    self.get_logger().info(f"Object Detected at Coordinates: ({cx}, {cy})")
+        else:
+            self.get_logger().info("No object detected")
+    
+    def laser_callback(self, msg):
+        self.laser_data = msg.ranges
+        if len(self.laser_data) > 0:
+            self.lidar_distance = min(self.laser_data)  # Closest object distance
+            self.get_logger().info(f"LIDAR Distance: {self.lidar_distance:.2f} meters")
 
-            if detected_object:
-                centroid_x = detected_object['centroid_x']
-                self.get_logger().info(f"Object detected at {centroid_x} px in the image.")
-                
-                self.move_robot_to_face_object(centroid_x, image.shape[1])
-
-            if self.get_parameter('show_image_bool').value:
-                cv2.imshow(self.get_parameter('window_name').value, image)
-                cv2.waitKey(1)
-
-        except Exception as e:
-            self.get_logger().error(f"Error in image callback: {e}")
-
-    def detect_object(self, image):
-        # Simulated object detection logic (replace with actual detection)
-        object_detected = {'centroid_x': image.shape[1] // 2}  # Simulate object in the center
-        return object_detected
-
-    def scan_callback(self, scan_data):
-        try:
-            self.get_logger().info("Laser scan data received")
-            self.latest_scan = scan_data
-        except Exception as e:
-            self.get_logger().error(f"Error in scan callback: {e}")
-
-    def move_robot_to_face_object(self, centroid_x, frame_width):
-        try:
-            cmd = Twist()
-            turn_threshold = 20  # Pixels
-
-            if abs(centroid_x - frame_width / 2) > turn_threshold:
-                # If the object is not centered, rotate the robot
-                cmd.angular.z = -0.2 if centroid_x > frame_width / 2 else 0.2
-                self.get_logger().info(f"Rotating {'right' if cmd.angular.z < 0 else 'left'}")
-            else:
-                cmd.angular.z = 0.0
-                self.get_logger().info("Object is centered.")
-
-            self.pub_cmd.publish(cmd)
-        except Exception as e:
-            self.get_logger().error(f"Error in move_robot_to_face_object: {e}")
+    def timer_callback(self):
+        if self.lidar_distance and self.lidar_distance <= 0.35:
+            self.stop_robot()
 
     def stop_robot(self):
-        cmd = Twist()
-        cmd.linear.x = 0.0
-        cmd.angular.z = 0.0
-        self.pub_cmd.publish(cmd)
-        self.get_logger().info("Robot stopped.")
+        twist = Twist()
+        twist.linear.x = 0.0
+        twist.angular.z = 0.0
+        self.publisher_cmd_vel.publish(twist)
+        self.get_logger().info("Robot stopped")
 
 def main(args=None):
     rclpy.init(args=args)
-    node = DetectObjectAndGetRange()
-
-    try:
-        rclpy.spin(node)
-    except Exception as e:
-        node.get_logger().error(f"Error: {e}")
-    finally:
-        node.destroy_node()
-        rclpy.shutdown()
+    node = DetectAndRange()
+    rclpy.spin(node)
+    node.destroy_node()
+    rclpy.shutdown()
 
 if __name__ == '__main__':
     main()
