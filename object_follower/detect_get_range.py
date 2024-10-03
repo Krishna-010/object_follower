@@ -1,69 +1,144 @@
 import rclpy
 from rclpy.node import Node
-from sensor_msgs.msg import LaserScan
+from sensor_msgs.msg import CompressedImage, LaserScan
 from geometry_msgs.msg import Twist
+from cv_bridge import CvBridge
 import cv2
 import numpy as np
-from cv_bridge import CvBridge
-from sensor_msgs.msg import Image
+import logging
 
 class DetectAndRange(Node):
     def __init__(self):
         super().__init__('detect_and_range')
-        self.publisher_cmd_vel = self.create_publisher(Twist, '/cmd_vel', 10)
-        self.subscription_scan = self.create_subscription(LaserScan, '/scan', self.laser_callback, 10)
-        self.subscription_image = self.create_subscription(Image, '/camera/image_raw', self.image_callback, 10)
+
+        # Logging for debugging
+        logging.basicConfig(level=logging.DEBUG)
+
+        # Declare and initialize the variables
         self.bridge = CvBridge()
-        self.laser_data = None
-        self.timer = self.create_timer(0.1, self.timer_callback)
+        self.laser_ranges = None
+        self.laser_angle_increment = None
+        self.object_detected = False
 
-        # Object detection params
-        self.lower_red = np.array([0, 120, 70])
-        self.upper_red = np.array([10, 255, 255])
-        self.lidar_distance = None
-        self.get_logger().info("Detect and Range Node Initialized")
+        # Set up the subscribers
+        self.image_subscriber = self.create_subscription(
+            CompressedImage,
+            '/camera/image/compressed',
+            self.image_callback,
+            10)
 
-    def image_callback(self, data):
-        frame = self.bridge.imgmsg_to_cv2(data, "bgr8")
-        hsv_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-        mask = cv2.inRange(hsv_frame, self.lower_red, self.upper_red)
+        # Set up QoS for LIDAR to handle reliability issue
+        qos_profile = rclpy.qos.QoSProfile(
+            reliability=rclpy.qos.QoSReliabilityPolicy.RMW_QOS_POLICY_RELIABILITY_RELIABLE,
+            history=rclpy.qos.QoSHistoryPolicy.RMW_QOS_POLICY_HISTORY_KEEP_LAST,
+            depth=10
+        )
+        self.laser_subscriber = self.create_subscription(
+            LaserScan,
+            '/scan',
+            self.laser_callback,
+            qos_profile)
 
-        # Detect the object
-        contours, _ = cv2.findContours(mask, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-        if contours:
-            largest_contour = max(contours, key=cv2.contourArea)
-            if cv2.contourArea(largest_contour) > 500:
-                ((x, y), radius) = cv2.minEnclosingCircle(largest_contour)
-                if radius > 10:
-                    cx, cy = int(x), int(y)
-                    cv2.circle(frame, (cx, cy), int(radius), (0, 255, 0), 2)
-                    self.get_logger().info(f"Object Detected at Coordinates: ({cx}, {cy})")
-        else:
-            self.get_logger().info("No object detected")
-    
+        # Create a publisher for stopping the robot in case of emergency
+        self.cmd_vel_publisher = self.create_publisher(Twist, '/cmd_vel', 10)
+
+        # Timer to control how often to process the image and range
+        self.timer = self.create_timer(0.5, self.process_data)
+
+    def image_callback(self, msg):
+        """Handles incoming image data from the camera."""
+        try:
+            logging.debug("Received an image")
+            np_arr = np.frombuffer(msg.data, np.uint8)
+            image = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+            self.detect_object(image)
+        except Exception as e:
+            logging.error(f"Error processing image: {e}")
+
     def laser_callback(self, msg):
-        self.laser_data = msg.ranges
-        if len(self.laser_data) > 0:
-            self.lidar_distance = min(self.laser_data)  # Closest object distance
-            self.get_logger().info(f"LIDAR Distance: {self.lidar_distance:.2f} meters")
+        """Handles incoming LIDAR data."""
+        try:
+            logging.debug("Received LIDAR data")
+            self.laser_ranges = np.array(msg.ranges)
+            self.laser_angle_increment = msg.angle_increment
+        except Exception as e:
+            logging.error(f"Error processing LIDAR: {e}")
 
-    def timer_callback(self):
-        if self.lidar_distance and self.lidar_distance <= 0.5:
-            self.stop_robot()
+    def detect_object(self, image):
+        """Detects the object from the image and draws a rectangle around it."""
+        try:
+            # Convert the image to grayscale
+            gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+            # Use a simple threshold to detect the object (or replace with actual model)
+            _, thresh = cv2.threshold(gray, 100, 255, cv2.THRESH_BINARY)
+
+            # Find contours to detect the object
+            contours, _ = cv2.findContours(thresh, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+
+            # Assuming the largest contour is the object (this is a placeholder)
+            if contours:
+                largest_contour = max(contours, key=cv2.contourArea)
+                x, y, w, h = cv2.boundingRect(largest_contour)
+
+                # Draw a rectangle around the detected object
+                cv2.rectangle(image, (x, y), (x + w, y + h), (0, 255, 0), 2)
+                self.object_detected = True
+                self.object_x_center = x + w // 2
+            else:
+                self.object_detected = False
+
+            # Display the image with detection (for debugging)
+            cv2.imshow("Object Detection", image)
+            cv2.waitKey(1)
+        except Exception as e:
+            logging.error(f"Error detecting object: {e}")
+
+    def process_data(self):
+        """Processes the camera and LIDAR data to get the range to the detected object."""
+        if self.object_detected and self.laser_ranges is not None:
+            try:
+                # Convert the object's X position to an angle
+                frame_width = 640  # Assuming the camera frame width is 640 pixels
+                fov = np.pi / 3  # 60 degree FOV for example
+                object_angle = (self.object_x_center / frame_width) * fov - fov / 2
+
+                # Use the angle to find the corresponding LIDAR data
+                laser_index = int((object_angle + (fov / 2)) / self.laser_angle_increment)
+
+                # Check the range from the LIDAR
+                object_distance = self.laser_ranges[laser_index]
+                logging.info(f"Object detected at {object_distance:.2f} meters")
+
+                # Check if within stopping distance
+                if object_distance < 0.5:  # 50 cm threshold
+                    self.stop_robot()
+            except Exception as e:
+                logging.error(f"Error calculating distance to object: {e}")
+        else:
+            logging.debug("No object detected or no LIDAR data available")
 
     def stop_robot(self):
-        twist = Twist()
-        twist.linear.x = 0.0
-        twist.angular.z = 0.0
-        self.publisher_cmd_vel.publish(twist)
-        self.get_logger().info("Robot stopped")
+        """Publishes a zero-velocity Twist message to stop the robot."""
+        try:
+            logging.info("Stopping the robot")
+            twist = Twist()
+            twist.linear.x = 0.0
+            twist.angular.z = 0.0
+            self.cmd_vel_publisher.publish(twist)
+        except Exception as e:
+            logging.error(f"Error stopping robot: {e}")
 
 def main(args=None):
     rclpy.init(args=args)
     node = DetectAndRange()
-    rclpy.spin(node)
-    node.destroy_node()
-    rclpy.shutdown()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        logging.info("Node stopped by user")
+    finally:
+        node.stop_robot()
+        node.destroy_node()
+        rclpy.shutdown()
 
 if __name__ == '__main__':
     main()
