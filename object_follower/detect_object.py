@@ -11,7 +11,7 @@ class DetectObject(Node):
         super().__init__('detect_object')
 
         # QoS profile
-        qos_profile = qos_profile = rclpy.qos.QoSProfile(
+        qos_profile = rclpy.qos.QoSProfile(
             reliability=rclpy.qos.QoSReliabilityPolicy.RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT,
             history=rclpy.qos.QoSHistoryPolicy.RMW_QOS_POLICY_HISTORY_KEEP_LAST,
             depth=10
