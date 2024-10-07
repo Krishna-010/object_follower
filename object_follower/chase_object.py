@@ -10,7 +10,11 @@ class ChaseObject(Node):
         super().__init__('chase_object')
 
         # QoS profile
-        qos_profile = QoSProfile(depth=10)
+        qos_profile = rclpy.qos.QoSProfile(
+            reliability=rclpy.qos.QoSReliabilityPolicy.RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT,
+            history=rclpy.qos.QoSHistoryPolicy.RMW_QOS_POLICY_HISTORY_KEEP_LAST,
+            depth=10
+        )
 
         # Publisher for velocity commands
         self.publisher = self.create_publisher(Twist, '/cmd_vel', qos_profile)
