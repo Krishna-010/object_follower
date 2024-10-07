@@ -11,7 +11,11 @@ class DetectObject(Node):
         super().__init__('detect_object')
 
         # QoS profile
-        qos_profile = QoSProfile(depth=10)
+        qos_profile = qos_profile = rclpy.qos.QoSProfile(
+            reliability=rclpy.qos.QoSReliabilityPolicy.RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT,
+            history=rclpy.qos.QoSHistoryPolicy.RMW_QOS_POLICY_HISTORY_KEEP_LAST,
+            depth=10
+        )
 
         # Publisher for the detected object image
         self.image_publisher = self.create_publisher(Image, '/detected_object_image', qos_profile)
