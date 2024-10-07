@@ -9,7 +9,11 @@ class GetRange(Node):
         super().__init__('get_range')
 
         # QoS profile
-        qos_profile = QoSProfile(depth=10)
+        qos_profile = rclpy.qos.QoSProfile(
+            reliability=rclpy.qos.QoSReliabilityPolicy.RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT,
+            history=rclpy.qos.QoSHistoryPolicy.RMW_QOS_POLICY_HISTORY_KEEP_LAST,
+            depth=10
+        )
 
         # Publisher for distance and angle
         self.distance_publisher = self.create_publisher(Float32, '/distance', qos_profile)
