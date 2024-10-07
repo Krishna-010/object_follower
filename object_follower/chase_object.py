@@ -1,127 +1,88 @@
 import rclpy
 from rclpy.node import Node
-from sensor_msgs.msg import LaserScan
 from geometry_msgs.msg import Twist
-import logging
+from rclpy.qos import QoSProfile
+from std_msgs.msg import Float32
 import time
-
-class PIDController:
-    def __init__(self, Kp, Ki, Kd):
-        self.Kp = Kp
-        self.Ki = Ki
-        self.Kd = Kd
-        self.prev_error = 0
-        self.integral = 0
-
-    def calculate(self, setpoint, measured_value):
-        # Calculate error
-        error = setpoint - measured_value
-        
-        # Proportional term
-        P_out = self.Kp * error
-        
-        # Integral term
-        self.integral += error
-        I_out = self.Ki * self.integral
-        
-        # Derivative term
-        derivative = error - self.prev_error
-        D_out = self.Kd * derivative
-        
-        # Total output
-        output = P_out + I_out + D_out
-        
-        # Save error for next loop
-        self.prev_error = error
-        
-        return output
 
 class ChaseObject(Node):
     def __init__(self):
         super().__init__('chase_object')
 
-        # Logging for debugging
-        logging.basicConfig(level=logging.DEBUG)
+        # QoS profile
+        qos_profile = QoSProfile(depth=10)
 
-        # Declare and initialize variables
-        self.object_distance = None
+        # Publisher for velocity commands
+        self.publisher = self.create_publisher(Twist, '/cmd_vel', qos_profile)
 
-        # Set QoS to BEST_EFFORT to handle the LIDAR compatibility issue
-        qos_profile = rclpy.qos.QoSProfile(
-            reliability=rclpy.qos.QoSReliabilityPolicy.RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT,
-            history=rclpy.qos.QoSHistoryPolicy.RMW_QOS_POLICY_HISTORY_KEEP_LAST,
-            depth=10
-        )
+        # Subscribers for distance and angle
+        self.distance_subscriber = self.create_subscription(Float32, '/distance', self.distance_callback, qos_profile)
+        self.angle_subscriber = self.create_subscription(Float32, '/angle', self.angle_callback, qos_profile)
 
-        # Subscribe to the LaserScan data from LIDAR
-        self.laser_subscriber = self.create_subscription(
-            LaserScan,
-            '/scan',
-            self.laser_callback,
-            qos_profile)
+        # PID controller parameters
+        self.Kp_linear = 0.5
+        self.Ki_linear = 0.1
+        self.Kd_linear = 0.1
+        self.Kp_angular = 1.0
+        self.Ki_angular = 0.1
+        self.Kd_angular = 0.1
 
-        # Create a publisher to control the robot's velocity
-        self.cmd_vel_publisher = self.create_publisher(Twist, '/cmd_vel', 10)
+        # PID control variables
+        self.prev_error_distance = 0.0
+        self.integral_distance = 0.0
+        self.prev_error_angle = 0.0
+        self.integral_angle = 0.0
 
-        # PID controller for linear velocity (distance to object)
-        self.linear_pid = PIDController(Kp=0.5, Ki=0.0, Kd=0.1)  # Tune the PID gains as needed
-        # PID controller for angular velocity (centering the object)
-        self.angular_pid = PIDController(Kp=0.5, Ki=0.0, Kd=0.1)  # Tune these as needed
+        self.get_logger().info("Chase Object node initialized")
 
-        # Set desired distance (50 cm)
-        self.desired_distance = 0.5
+        # Initialize distance and angle
+        self.distance = 0.0
+        self.angle = 0.0
 
-        # Timer for control loop
-        self.timer = self.create_timer(0.1, self.chase_object)
+    def distance_callback(self, msg):
+        self.distance = msg.data
 
-        logging.info("Chase node initialized")
+    def angle_callback(self, msg):
+        self.angle = msg.data
 
-    def laser_callback(self, msg):
-        """Handles incoming LIDAR data."""
-        try:
-            logging.debug("Received LIDAR data")
-            # Get the distance directly in front of the robot (assuming index 0 corresponds to the front)
-            self.object_distance = msg.ranges[len(msg.ranges) // 2]
-        except Exception as e:
-            logging.error(f"Error processing LIDAR data: {e}")
+    def chase(self):
+        # Calculate linear and angular velocities using PID control
+        error_distance = self.distance - 0.5  # Target distance is 50 cm
+        self.integral_distance += error_distance
+        derivative_distance = error_distance - self.prev_error_distance
+        linear_velocity = (self.Kp_linear * error_distance) + (self.Ki_linear * self.integral_distance) + (self.Kd_linear * derivative_distance)
+        self.prev_error_distance = error_distance
 
-    def chase_object(self):
-        """Moves the robot toward the object using a PID controller."""
-        try:
-            if self.object_distance is not None:
-                logging.info(f"Object distance: {self.object_distance:.2f} meters")
+        error_angle = self.angle
+        self.integral_angle += error_angle
+        derivative_angle = error_angle - self.prev_error_angle
+        angular_velocity = (self.Kp_angular * error_angle) + (self.Ki_angular * self.integral_angle) + (self.Kd_angular * derivative_angle)
+        self.prev_error_angle = error_angle
 
-                # Create Twist message for movement
-                twist = Twist()
+        # Create the command message
+        cmd = Twist()
+        cmd.linear.x = max(0.0, linear_velocity)  # Prevent negative velocity
+        cmd.angular.z = angular_velocity
 
-                # Use PID to calculate linear velocity (based on distance)
-                linear_velocity = self.linear_pid.calculate(self.desired_distance, self.object_distance)
-                
-                # Bound linear velocity to a maximum value
-                twist.linear.x = min(max(linear_velocity, 0.0), 0.2)  # Move forward at calculated speed
-                twist.angular.z = 0.0  # Default to no rotation
-                
-                logging.debug(f"Linear Velocity (PID controlled): {twist.linear.x}")
+        self.publisher.publish(cmd)
+        self.get_logger().info(f"Moving towards object: Linear Velocity: {cmd.linear.x:.2f}, Angular Velocity: {cmd.angular.z:.2f}")
 
-                if self.object_distance <= self.desired_distance:
-                    # If the object is within 35 cm, stop the robot
-                    twist.linear.x = 0.0
-                    twist.angular.z = 0.0
-                    logging.info("Object within stopping distance, stopping robot.")
-                
-                self.cmd_vel_publisher.publish(twist)
-            else:
-                logging.debug("No LIDAR data available to chase object")
-        except Exception as e:
-            logging.error(f"Error chasing object: {e}")
+    def stop(self):
+        # Emergency stop
+        cmd = Twist()
+        self.publisher.publish(cmd)
+        self.get_logger().info("Emergency stop")
 
-def main(args=None):
-    rclpy.init(args=args)
+def main():
+    rclpy.init()
     node = ChaseObject()
     try:
-        rclpy.spin(node)
+        while rclpy.ok():
+            rclpy.spin_once(node)
+            node.chase()
+            time.sleep(0.1)
     except KeyboardInterrupt:
-        logging.info("Node stopped by user")
+        node.stop()
     finally:
         node.destroy_node()
         rclpy.shutdown()
