@@ -1,67 +1,69 @@
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import Image
-from geometry_msgs.msg import Point, Twist
 from cv_bridge import CvBridge
 import cv2
 import numpy as np
+from rclpy.qos import QoSProfile
 
-class ObjectDetector(Node):
+class DetectObject(Node):
     def __init__(self):
-        super().__init__('object_detector')
+        super().__init__('detect_object')
 
-        self.publisher_centroid = self.create_publisher(Point, '/object_centroid', 10)
-        self.publisher_cmd_vel = self.create_publisher(Twist, '/cmd_vel', 10)
-        self.bridge = CvBridge()
-        self.subscription = self.create_subscription(
-            Image, '/camera/image_raw', self.camera_callback, 10)
+        # QoS profile
+        qos_profile = QoSProfile(depth=10)
 
-    def camera_callback(self, data):
-        frame = self.bridge.imgmsg_to_cv2(data, "bgr8")
-        hsv_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        # Publisher for the detected object image
+        self.image_publisher = self.create_publisher(Image, '/detected_object_image', qos_profile)
+        self.cap = cv2.VideoCapture(0)  # Open the camera
 
-        lower_red = np.array([0, 120, 70])
-        upper_red = np.array([10, 255, 255])
-        mask = cv2.inRange(hsv_frame, lower_red, upper_red)
+        self.get_logger().info("Detect Object node initialized")
 
+    def detect_object(self):
+        ret, frame = self.cap.read()
+        if not ret:
+            self.get_logger().error("Failed to capture image")
+            return
+
+        # Convert to HSV and apply color thresholding (change as needed)
+        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        lower_color = np.array([0, 120, 70])  # Red
+        upper_color = np.array([10, 255, 255])
+        mask = cv2.inRange(hsv, lower_color, upper_color)
         contours, _ = cv2.findContours(mask, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+
         if contours:
             largest_contour = max(contours, key=cv2.contourArea)
-            if cv2.contourArea(largest_contour) > 500:
-                cx, cy = self.find_centroid(largest_contour)
-                self.get_logger().info(f'Centroid at: ({cx}, {cy})')
+            x, y, w, h = cv2.boundingRect(largest_contour)
+            cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
 
-                point = Point()
-                point.x = cx
-                point.y = cy
-                point.z = 0  # Not using z, but it's needed for Point message
-                self.publisher_centroid.publish(point)
+            # Publish the image with the bounding box
+            self.publish_image(frame)
 
-    def find_centroid(self, contour):
-        M = cv2.moments(contour)
-        if M['m00'] != 0:
-            cx = int(M['m10'] / M['m00'])
-            cy = int(M['m01'] / M['m00'])
+            self.get_logger().info("Object found, sending image.")
         else:
-            cx, cy = 0, 0
-        return cx, cy
+            self.get_logger().info("No object detected.")
 
-    def stop_robot(self):
-        twist = Twist()
-        twist.linear.x = 0
-        twist.angular.z = 0
-        self.publisher_cmd_vel.publish(twist)
-        self.get_logger().info('Emergency stop initiated: Robot stopped.')
+    def publish_image(self, frame):
+        bridge = CvBridge()
+        msg = bridge.cv2_to_imgmsg(frame, encoding="bgr8")
+        self.image_publisher.publish(msg)
 
-def main(args=None):
-    rclpy.init(args=args)
-    node = ObjectDetector()
+    def stop(self):
+        self.cap.release()
+        cv2.destroyAllWindows()
 
+def main():
+    rclpy.init()
+    node = DetectObject()
     try:
-        rclpy.spin(node)
+        while rclpy.ok():
+            rclpy.spin_once(node)
+            node.detect_object()
     except KeyboardInterrupt:
-        node.stop_robot()
+        node.stop()
     finally:
+        node.stop()
         node.destroy_node()
         rclpy.shutdown()
 
