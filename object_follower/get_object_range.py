@@ -1,41 +1,51 @@
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import LaserScan
-from geometry_msgs.msg import Point, Twist
+from std_msgs.msg import Float32
+from rclpy.qos import QoSProfile
 
-class ObjectRange(Node):
+class GetRange(Node):
     def __init__(self):
-        super().__init__('object_range')
-        self.subscription = self.create_subscription(LaserScan, '/scan', self.lidar_callback, 10)
-        self.publisher_distance = self.create_publisher(Point, '/object_distance', 10)
-        self.publisher_cmd_vel = self.create_publisher(Twist, '/cmd_vel', 10)
+        super().__init__('get_range')
 
-    def lidar_callback(self, scan):
-        distance = min(scan.ranges)  # Get the minimum range from LIDAR scan
-        self.get_logger().info(f'Object distance: {distance:.2f} meters')
+        # QoS profile
+        qos_profile = QoSProfile(depth=10)
 
-        # Publish the distance
-        point = Point()
-        point.x = distance  # Using x to represent distance
-        point.y = 0
-        point.z = 0
-        self.publisher_distance.publish(point)
+        # Publisher for distance and angle
+        self.distance_publisher = self.create_publisher(Float32, '/distance', qos_profile)
+        self.angle_publisher = self.create_publisher(Float32, '/angle', qos_profile)
 
-    def stop_robot(self):
-        twist = Twist()
-        twist.linear.x = 0
-        twist.angular.z = 0
-        self.publisher_cmd_vel.publish(twist)
-        self.get_logger().info('Emergency stop initiated: Robot stopped.')
+        # Subscriber for LIDAR data
+        self.lidar_subscriber = self.create_subscription(LaserScan, '/scan', self.lidar_callback, qos_profile)
 
-def main(args=None):
-    rclpy.init(args=args)
-    node = ObjectRange()
+        self.get_logger().info("Get Range node initialized")
 
+    def lidar_callback(self, msg):
+        min_distance = min(msg.ranges)
+        angle_index = msg.ranges.index(min_distance)
+        angle = msg.angle_min + angle_index * msg.angle_increment
+
+        # Publish distance and angle
+        self.publish_distance(min_distance)
+        self.publish_angle(angle)
+
+    def publish_distance(self, distance):
+        distance_msg = Float32()
+        distance_msg.data = distance
+        self.distance_publisher.publish(distance_msg)
+
+    def publish_angle(self, angle):
+        angle_msg = Float32()
+        angle_msg.data = angle
+        self.angle_publisher.publish(angle_msg)
+
+def main():
+    rclpy.init()
+    node = GetRange()
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
-        node.stop_robot()
+        pass
     finally:
         node.destroy_node()
         rclpy.shutdown()
