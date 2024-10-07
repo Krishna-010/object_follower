@@ -1,75 +1,69 @@
 import rclpy
 from rclpy.node import Node
-from sensor_msgs.msg import Image
-from cv_bridge import CvBridge
+from sensor_msgs.msg import CompressedImage
+from rclpy.qos import QoSProfile
 import cv2
 import numpy as np
-from rclpy.qos import QoSProfile
+from cv_bridge import CvBridge
 
-class DetectObject(Node):
+class DetectObjectNode(Node):
     def __init__(self):
         super().__init__('detect_object')
-
-        # QoS profile
+        self.bridge = CvBridge()
+        
         qos_profile = rclpy.qos.QoSProfile(
             reliability=rclpy.qos.QoSReliabilityPolicy.RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT,
             history=rclpy.qos.QoSHistoryPolicy.RMW_QOS_POLICY_HISTORY_KEEP_LAST,
             depth=10
         )
+        
+        self.image_subscription = self.create_subscription(
+            CompressedImage,
+            '/camera/image/compressed',
+            self.image_callback,
+            qos_profile
+        )
+        self.image_publisher = self.create_publisher(CompressedImage, '/object_image', qos_profile)
+        self.timer = self.create_timer(0.1, self.timer_callback)
 
-        # Publisher for the detected object image
-        self.image_publisher = self.create_publisher(Image, '/detected_object_image', qos_profile)
-        self.cap = cv2.VideoCapture(0)  # Open the camera
+        self.detected_object = False
+        self.get_logger().info("Detect Object Node Initialized")
 
-        self.get_logger().info("Detect Object node initialized")
-
-    def detect_object(self):
-        ret, frame = self.cap.read()
-        if not ret:
-            self.get_logger().error("Failed to capture image")
-            return
-
-        # Convert to HSV and apply color thresholding (change as needed)
-        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-        lower_color = np.array([0, 120, 70])  # Red
-        upper_color = np.array([10, 255, 255])
-        mask = cv2.inRange(hsv, lower_color, upper_color)
+    def image_callback(self, msg):
+        self.get_logger().info("Image received from camera")
+        cv_image = self.bridge.compressed_imgmsg_to_cv2(msg, "bgr8")
+        
+        # Simple object detection based on color (change as needed)
+        hsv = cv2.cvtColor(cv_image, cv2.COLOR_BGR2HSV)
+        lower_red = np.array([0, 100, 100])
+        upper_red = np.array([10, 255, 255])
+        mask = cv2.inRange(hsv, lower_red, upper_red)
         contours, _ = cv2.findContours(mask, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-
+        
         if contours:
+            self.detected_object = True
             largest_contour = max(contours, key=cv2.contourArea)
             x, y, w, h = cv2.boundingRect(largest_contour)
-            cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
-
-            # Publish the image with the bounding box
-            self.publish_image(frame)
-
-            self.get_logger().info("Object found, sending image.")
+            cv2.rectangle(cv_image, (x, y), (x + w, y + h), (0, 255, 0), 2)
+            self.get_logger().info(f"Object detected at coordinates: {x}, {y}")
         else:
-            self.get_logger().info("No object detected.")
+            self.detected_object = False
+            self.get_logger().info("No object detected")
 
-    def publish_image(self, frame):
-        bridge = CvBridge()
-        msg = bridge.cv2_to_imgmsg(frame, encoding="bgr8")
-        self.image_publisher.publish(msg)
+        # Publish the image with the detected object outline
+        compressed_image = self.bridge.cv2_to_compressed_imgmsg(cv_image)
+        self.image_publisher.publish(compressed_image)
 
-    def stop(self):
-        self.cap.release()
-        cv2.destroyAllWindows()
+    def timer_callback(self):
+        if not self.detected_object:
+            self.get_logger().info("No object detected, rotating to find object...")
 
-def main():
-    rclpy.init()
-    node = DetectObject()
-    try:
-        while rclpy.ok():
-            rclpy.spin_once(node)
-            node.detect_object()
-    except KeyboardInterrupt:
-        node.stop()
-    finally:
-        node.stop()
-        node.destroy_node()
-        rclpy.shutdown()
+def main(args=None):
+    rclpy.init(args=args)
+    node = DetectObjectNode()
+    rclpy.spin(node)
+    node.destroy_node()
+    rclpy.shutdown()
 
 if __name__ == '__main__':
     main()
